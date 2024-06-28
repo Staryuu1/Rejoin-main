@@ -134,7 +134,7 @@ def check_inactive_users():
         inactive_users = []
         for username, data in user_data.items():
             last_update = datetime.strptime(data['last_update'], '%Y-%m-%d %H:%M:%S.%f')
-            if now - last_update > timedelta(minutes=1):
+            if now - last_update > timedelta(minutes=5):
                 print(f"User Inactive: '{username}'")
                 inactive_users.append(username)
         
