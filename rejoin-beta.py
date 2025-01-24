@@ -41,7 +41,6 @@ def send_webhook(webhook_url, content, avatar_url=None):
 
 def launch_roblox_with_private_server(private_server_link, username):
     packagename = user_data.get(username, {}).get('packagename')
-    crash = user_data.get(username, {}).get('cc')
     pid = get_pid(packagename)
     if packagename:
         if pid:
@@ -50,28 +49,16 @@ def launch_roblox_with_private_server(private_server_link, username):
         time.sleep(5)
         cmd = f"am start -a android.intent.action.VIEW -d '{private_server_link}' {packagename}"
         os.system(cmd)
-        crash += 1
-        user_data[username]['cc'] = crash
-        print(f"Launched Roblox game with ps: {private_server_link} for user: {username} with crash count: {crash}")
+        print(f"Launched Roblox game with ps: {private_server_link} for user: {username}")
     else:
         print(f"Package name not found for user: {username}")
 
-
-
 def launch_roblox(game_id, username):
     packagename = user_data.get(username, {}).get('packagename')
-    crash = user_data.get(username, {}).get('cc')
-    pid = get_pid(packagename)
     if packagename:
-        if pid:
-            close = f"su -c 'kill {pid}'"
-            os.system(close)
-        time.sleep(5)
         url = f"roblox://placeID={game_id}"
         cmd = f"am start -a android.intent.action.VIEW -d '{url}' {packagename}"
         os.system(cmd)
-        crash += 1
-        user_data[username]['cc'] = crash
         print(f"Launched Roblox game with ID: {game_id} for user: {username}")
     else:
         print(f"Package name not found for user: {username}")
@@ -111,109 +98,60 @@ def add_user():
         'ps_link': ps,
         'is_ps': is_ps,
         'webhook': wb,
-        'cc': 0,
         'last_update': str(datetime.now())
     }
     print(f"User added: {username}")
     send_webhook(wb, f"New user added: ||{username}||")
     return jsonify({"message": f"User '{username}' added successfully"}), 201
 
-@app.route('/rejoinroblox', methods=['POST'])
-def rejoin_roblox():
+    @app.route('/rejoinroblox', methods=['POST'])
+    def rejoin_roblox():
+        try:
+            username = request.json.get('username')
+            print(f"Received rejoinroblox request for user: {username}")
+            
+            if username in user_data:
+                user_info = user_data[username]
+                if user_info['is_ps']:
+                    launch_roblox_with_private_server(user_info['ps_link'], username)
+                else:
+                    launch_roblox(user_info['game_id'], username)
+                send_webhook(user_data[username]['webhook'],f"User ||{username}|| has Request Rejoin")
+                return jsonify({"message": f"Rejoined Roblox game for user: {username}"}), 200
+            else:
+                print(f"User '{username}' not found")
+                return jsonify({"error": f"User '{username}' not found"}), 404
+
+        except Exception as e:
+            print(f"Error occurred while processing rejoin request: {e}")
+            return jsonify({"error": "Internal server error"}), 500
+
+
+def find_all_roblox_packages():
+    """
+    Mencari semua package yang berhubungan dengan Roblox di perangkat Android.
+    """
     try:
-        username = request.json.get('username')
-        if not username:
-            return jsonify({"error": "Username is required"}), 400
-
-        print(f"Received rejoinroblox request for user: {username}")
-
-        user_info = user_data.get(username)
-        if not user_info:
-            return jsonify({"error": f"User '{username}' not found"}), 404
-
-        if user_info.get('is_ps'):
-            launch_roblox_with_private_server(user_info['ps_link'], username)
+        # Menjalankan perintah adb untuk mendapatkan daftar semua package
+        cmd = "adb shell pm list packages"
+        output = subprocess.getoutput(cmd)
+        
+        if output:
+            # Memfilter package yang mengandung "roblox"
+            roblox_packages = [line.split(":")[1] for line in output.splitlines() if "roblox" in line.lower()]
+            if roblox_packages:
+                print(f"Package Roblox ditemukan: {roblox_packages}")
+                return roblox_packages
+            else:
+                print("Tidak ditemukan package yang mengandung 'roblox'.")
+                return []
         else:
-            launch_roblox(user_info['game_id'], username)
-
-        send_webhook(user_info['webhook'], f"User ||{username}|| has requested to rejoin")
-        return jsonify({"message": f"Rejoined Roblox game for user: {username}"}), 200
-
+            print("Gagal mendapatkan daftar package.")
+            return []
     except Exception as e:
-        print(f"Error occurred while processing rejoin request: {e}")
-        return jsonify({"error": "Internal server error"}), 500
+        print(f"Error saat mencari package Roblox: {e}")
+        return []
 
-@app.route('/launchroblox', methods=['POST'])
-def launch_roblox_by_packagename():
-    try:
-        data = request.json
-        private_server_link = data.get('private_server_link')
-        packagename = data.get('packagename')
-
-        if not private_server_link:
-            return jsonify({"error": "Private server link is required"}), 400
-        if not packagename:
-            return jsonify({"error": "Package name is required"}), 400
-
-        pid = get_pid(packagename)
-        if pid:
-            close_cmd = f"su -c 'kill {pid}'"
-            os.system(close_cmd)
-            time.sleep(5)
-
-        launch_cmd = f"am start -a android.intent.action.VIEW -d '{private_server_link}' {packagename}"
-        os.system(launch_cmd)
-
-        print(f"Launched Roblox game with ps: {private_server_link} for package: {packagename}")
-        return jsonify({"message": f"Launched Roblox game with ps: {private_server_link} for package: {packagename}"}), 200
-
-    except Exception as e:
-        print(f"Error launching Roblox game: {e}")
-        return jsonify({"error": "Internal server error"}), 500
-
-@app.route('/userdata', methods=['GET'])
-def get_user_data():
-    return jsonify(user_data), 200
-
-@app.route('/close', methods=['POST'])
-def close():
-    try:
-        username = request.json.get('username')
-        if not username:
-            return jsonify({"error": "Username is required"}), 400
-
-        packagename = user_data.get(username, {}).get('packagename')
-        if not packagename:
-            return jsonify({"error": "Packagename not found for the given username"}), 404
-
-        pid = get_pid(packagename)
-        if not pid:
-            return jsonify({"error": f"No process found for package name {packagename}"}), 404
-
-        close_command = f"su -c 'kill {pid}'"
-        os.system(close_command)
-
-        return jsonify({"message": f"Process for package {packagename} with PID {pid} has been terminated"}), 200
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/removeuser', methods=['POST'])
-def remove_user():
-    username = request.json.get('username')
-    print(f"Received request to remove user: {username}")
-    
-    if not username:
-        print("No username provided in the request")
-        return jsonify({"error": "Username is required"}), 400
-
-    if username in user_data:
-        del user_data[username]
-        print(f"User '{username}' removed successfully")
-        return jsonify({"message": f"User '{username}' removed successfully"}), 200
-    else:
-        print(f"User '{username}' not found")
-        return jsonify({"error": f"User '{username}' not found"}), 404
 
 def check_inactive_users():
     print("Starting check_inactive_users thread...")
@@ -239,11 +177,29 @@ def check_inactive_users():
             send_webhook(user_data[user]['webhook'],f"User ||{user}|| has been inactive, {user_data[username]['last_update']}")
         print("Inactive users checked.")
 
+def menu():
+    while True:
+        print("\nMain Menu:")
+        print("1. Enable Auto Rejoin")
+        print("2. Roblox Package List")
+        print("3. Exit")
+        choice = input("Enter your choice: ")
+
+        if choice == '1':
+            thread = threading.Thread(target=check_inactive_users, daemon=True)
+            thread.start()
+            print("Background thread started.")
+        elif choice == '2':
+            roblox_packages = find_all_roblox_packages()
+            print(f"Package terkait Roblox: {roblox_packages}")
+        elif choice == '3':
+            print("Exiting menu.")
+            break
+        else:
+            print("Invalid choice. Please try again.")
 
 
-thread = threading.Thread(target=check_inactive_users, daemon=True)
-thread.start()
-print("Background thread started.")
 
 if __name__ == '__main__':
+    menu()
     app.run(host='127.0.0.1', port=6969)
