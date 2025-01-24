@@ -133,7 +133,7 @@ def find_all_roblox_packages():
     """
     try:
         # Menjalankan perintah adb untuk mendapatkan daftar semua package
-        cmd = "adb shell pm list packages"
+        cmd = "pm list packages"
         output = subprocess.getoutput(cmd)
         
         if output:
