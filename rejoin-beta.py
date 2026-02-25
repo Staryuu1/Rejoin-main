@@ -188,17 +188,48 @@ def check_inactive_users():
             with user_data_lock:
                 user_data[user]['last_update'] = new_time
 
-            
+            # FIX 2: Was 'username' (undefined), now correctly uses 'user'
             send_webhook(user_info['webhook'], f"User ||{user}|| has been inactive, {new_time}")
 
         print("Inactive users checked.")
+
+def list_users():
+    with user_data_lock:
+        snapshot = {u: d.copy() for u, d in user_data.items()}
+
+    if not snapshot:
+        print("\nTidak ada user yang terdaftar.")
+        return
+
+    print(f"\n{'='*60}")
+    print(f"{'No':<4} {'Username':<20} {'Package':<25} {'Status'}")
+    print(f"{'='*60}")
+
+    now = datetime.now()
+    for i, (username, data) in enumerate(snapshot.items(), 1):
+        last_update = datetime.strptime(data['last_update'], '%Y-%m-%d %H:%M:%S.%f')
+        elapsed = now - last_update
+        if elapsed > timedelta(minutes=5):
+            status = "INACTIVE ⚠️"
+        else:
+            status = f"Active ({int(elapsed.total_seconds())}s ago)"
+
+        print(f"{i:<4} {username:<20} {data['packagename']:<25} {status}")
+        print(f"     Game ID : {data['game_id']}")
+        print(f"     PS      : {'Yes - ' + data['ps_link'] if data['is_ps'] else 'No'}")
+        print(f"     Webhook : {'Set' if data['webhook'] and data['webhook'] != '0' else 'Not set'}")
+        print(f"     Last Update: {data['last_update']}")
+        print(f"{'-'*60}")
+
+    print(f"Total: {len(snapshot)} user(s)")
 
 def menu():
     while True:
         print("\nMain Menu:")
         print("1. Enable Auto Rejoin")
         print("2. Roblox Package List")
-        print("3. Exit")
+        print("3. Daftar User")
+        print("4. Exit")
         choice = input("Enter your choice: ")
 
         if choice == '1':
@@ -209,6 +240,8 @@ def menu():
             roblox_packages = find_all_roblox_packages()
             print(f"Package terkait Roblox: {roblox_packages}")
         elif choice == '3':
+            list_users()
+        elif choice == '4':
             print("Exiting menu.")
             break
         else:
@@ -216,7 +249,7 @@ def menu():
 
 
 if __name__ == '__main__':
-   
+    # FIX 3: Run Flask in a background thread so menu() doesn't block the server
     flask_thread = threading.Thread(
         target=lambda: app.run(host='127.0.0.1', port=6969),
         daemon=True
