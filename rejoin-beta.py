@@ -10,6 +10,7 @@ import requests
 app = Flask(__name__)
 
 user_data = {}
+user_data_lock = threading.Lock()
 
 def get_pid(package):
     pid_cmd = f"pidof {package}"
@@ -40,7 +41,8 @@ def send_webhook(webhook_url, content, avatar_url=None):
         print(f"Failed to send message. Status code: {response.status_code}, response: {response.text}")
 
 def launch_roblox_with_private_server(private_server_link, username):
-    packagename = user_data.get(username, {}).get('packagename')
+    with user_data_lock:
+        packagename = user_data.get(username, {}).get('packagename')
     pid = get_pid(packagename)
     if packagename:
         if pid:
@@ -54,7 +56,8 @@ def launch_roblox_with_private_server(private_server_link, username):
         print(f"Package name not found for user: {username}")
 
 def launch_roblox(game_id, username):
-    packagename = user_data.get(username, {}).get('packagename')
+    with user_data_lock:
+        packagename = user_data.get(username, {}).get('packagename')
     if packagename:
         url = f"roblox://placeID={game_id}"
         cmd = f"am start -a android.intent.action.VIEW -d '{url}' {packagename}"
@@ -67,13 +70,14 @@ def launch_roblox(game_id, username):
 def update_time():
     username = request.json.get('username')
     print(f"Received update_time request for user: {username}")
-    if username in user_data:
-        user_data[username]['last_update'] = str(datetime.now())
-        print(f"Time updated for user: {username} with time {user_data[username]['last_update']}")
-        return jsonify({"message": f"Time updated for user: {username}"}), 200
-    else:
-        print(f"User '{username}' not found")
-        return jsonify({"error": f"User '{username}' not found"}), 404
+    with user_data_lock:
+        if username in user_data:
+            user_data[username]['last_update'] = str(datetime.now())
+            print(f"Time updated for user: {username} with time {user_data[username]['last_update']}")
+            return jsonify({"message": f"Time updated for user: {username}"}), 200
+        else:
+            print(f"User '{username}' not found")
+            return jsonify({"error": f"User '{username}' not found"}), 404
 
 @app.route('/adduser', methods=['POST'])
 def add_user():
@@ -88,56 +92,55 @@ def add_user():
         print("Missing required fields: username, packagename, and game_id are required")
         return jsonify({"error": "Username, packagename, and game_id are required"}), 400
     
-    if username in user_data:
-        print(f"User '{username}' already exists")
-        return jsonify({"error": f"User '{username}' already exists"}), 409
-    
-    user_data[username] = {
-        'packagename': packagename,
-        'game_id': game_id,
-        'ps_link': ps,
-        'is_ps': is_ps,
-        'webhook': wb,
-        'last_update': str(datetime.now())
-    }
+    with user_data_lock:
+        if username in user_data:
+            print(f"User '{username}' already exists")
+            return jsonify({"error": f"User '{username}' already exists"}), 409
+        
+        user_data[username] = {
+            'packagename': packagename,
+            'game_id': game_id,
+            'ps_link': ps,
+            'is_ps': is_ps,
+            'webhook': wb,
+            'last_update': str(datetime.now())
+        }
     print(f"User added: {username}")
     send_webhook(wb, f"New user added: ||{username}||")
     return jsonify({"message": f"User '{username}' added successfully"}), 201
 
-    @app.route('/rejoinroblox', methods=['POST'])
-    def rejoin_roblox():
-        try:
-            username = request.json.get('username')
-            print(f"Received rejoinroblox request for user: {username}")
-            
-            if username in user_data:
-                user_info = user_data[username]
-                if user_info['is_ps']:
-                    launch_roblox_with_private_server(user_info['ps_link'], username)
-                else:
-                    launch_roblox(user_info['game_id'], username)
-                send_webhook(user_data[username]['webhook'],f"User ||{username}|| has Request Rejoin")
-                return jsonify({"message": f"Rejoined Roblox game for user: {username}"}), 200
-            else:
+
+# FIX 1: Moved out of add_user — was incorrectly indented inside it
+@app.route('/rejoinroblox', methods=['POST'])
+def rejoin_roblox():
+    try:
+        username = request.json.get('username')
+        print(f"Received rejoinroblox request for user: {username}")
+        
+        with user_data_lock:
+            if username not in user_data:
                 print(f"User '{username}' not found")
                 return jsonify({"error": f"User '{username}' not found"}), 404
+            user_info = user_data[username].copy()
 
-        except Exception as e:
-            print(f"Error occurred while processing rejoin request: {e}")
-            return jsonify({"error": "Internal server error"}), 500
+        if user_info['is_ps']:
+            launch_roblox_with_private_server(user_info['ps_link'], username)
+        else:
+            launch_roblox(user_info['game_id'], username)
+        send_webhook(user_info['webhook'], f"User ||{username}|| has Request Rejoin")
+        return jsonify({"message": f"Rejoined Roblox game for user: {username}"}), 200
+
+    except Exception as e:
+        print(f"Error occurred while processing rejoin request: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 def find_all_roblox_packages():
-    """
-    Mencari semua package yang berhubungan dengan Roblox di perangkat Android.
-    """
     try:
-        # Menjalankan perintah adb untuk mendapatkan daftar semua package
         cmd = "pm list packages"
         output = subprocess.getoutput(cmd)
         
         if output:
-            # Memfilter package yang mengandung "roblox"
             roblox_packages = [line.split(":")[1] for line in output.splitlines() if "roblox" in line.lower()]
             if roblox_packages:
                 print(f"Package Roblox ditemukan: {roblox_packages}")
@@ -159,7 +162,11 @@ def check_inactive_users():
         time.sleep(60)  
         now = datetime.now()
         inactive_users = []
-        for username, data in user_data.items():
+
+        with user_data_lock:
+            snapshot = {u: d.copy() for u, d in user_data.items()}
+
+        for username, data in snapshot.items():
             last_update = datetime.strptime(data['last_update'], '%Y-%m-%d %H:%M:%S.%f')
             if now - last_update > timedelta(minutes=5):
                 print(f"User Inactive: '{username}'")
@@ -168,13 +175,22 @@ def check_inactive_users():
         for user in inactive_users:
             time.sleep(10)
             print(f"User {user} has been inactive for more than 5 minutes")
-            if user_data[user]['is_ps'] == True :
-                launch_roblox_with_private_server(user_data[user]['ps_link'], user)
-            else:
-                launch_roblox(user_data[user]['game_id'], user)
 
-            user_data[user]['last_update'] = str(datetime.now())
-            send_webhook(user_data[user]['webhook'],f"User ||{user}|| has been inactive, {user_data[username]['last_update']}")
+            with user_data_lock:
+                user_info = user_data[user].copy()
+
+            if user_info['is_ps']:
+                launch_roblox_with_private_server(user_info['ps_link'], user)
+            else:
+                launch_roblox(user_info['game_id'], user)
+
+            new_time = str(datetime.now())
+            with user_data_lock:
+                user_data[user]['last_update'] = new_time
+
+            
+            send_webhook(user_info['webhook'], f"User ||{user}|| has been inactive, {new_time}")
+
         print("Inactive users checked.")
 
 def menu():
@@ -199,7 +215,11 @@ def menu():
             print("Invalid choice. Please try again.")
 
 
-
 if __name__ == '__main__':
+   
+    flask_thread = threading.Thread(
+        target=lambda: app.run(host='127.0.0.1', port=6969),
+        daemon=True
+    )
+    flask_thread.start()
     menu()
-    app.run(host='127.0.0.1', port=6969)
