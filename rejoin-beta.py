@@ -3,6 +3,8 @@ import time
 import subprocess
 import getpass
 import requests
+import random
+import string
 
 # ─── Prompt config ─────────────────────────────────────────────────────────────
 def prompt_config():
@@ -10,19 +12,19 @@ def prompt_config():
     print("  Roblox Auto Rejoin — Python Executor")
     print("=" * 52)
     print()
-
-    executor_id = ""
+    characters = string.ascii_uppercase + string.digits
+    executor_id =  ''.join(random.choices(characters, k=5))
     while not executor_id:
         executor_id = input("🏷️  Executor ID      : (misal: android_andi) ").strip()
         if not executor_id:
             print("  ⚠️  Wajib diisi!")
 
-    host = input("🌐 Node.js URL      : (misal: https://myapp.onrender.com) ").strip()
+    host = "https://prototipe.staryuu.my.id/"
     host = host.rstrip('/')
     if not host:
         host = "http://127.0.0.1:3000"
 
-    secret = ""
+    secret = "Staryuu17"
     while not secret:
         secret = getpass.getpass("🔐 Executor Secret  : ")
         if not secret:
@@ -43,6 +45,7 @@ def prompt_config():
         "secret":      secret,
         "interval":    interval,
     }
+
 
 # ─── Globals ───────────────────────────────────────────────────────────────────
 CONFIG = {}
