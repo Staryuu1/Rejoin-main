@@ -73,10 +73,24 @@ def run(cmd):
         return False, str(e)
 
 def kill_app(pkg):
-    # am force-stop tidak butuh root dan lebih bersih dari kill <pid>
-    ok, msg = run(f"am force-stop {pkg}")
-    print(f"[{CONFIG['executor_id']}] force-stop {pkg}: {'OK' if ok else msg}")
-    return ok
+    # Cari PID dulu
+    ok, out = run(f"pidof {pkg}")
+    pid = out.strip()
+
+    if not pid:
+        print(f"[{CONFIG['executor_id']}] {pkg} tidak berjalan, skip kill")
+        return True  # tidak perlu kill kalau memang tidak jalan
+
+    # Coba kill biasa dulu (tanpa root)
+    ok2, msg2 = run(f"kill {pid}")
+    if ok2:
+        print(f"[{CONFIG['executor_id']}] kill {pkg} PID={pid}: OK")
+        return True
+
+    # Fallback: kill dengan su (kalau root tersedia)
+    ok3, msg3 = run(f"su -c 'kill {pid}'")
+    print(f"[{CONFIG['executor_id']}] kill {pkg} PID={pid} (su): {'OK' if ok3 else msg3}")
+    return ok3
 
 def launch_private_server(ps_link, pkg):
     kill_app(pkg)
