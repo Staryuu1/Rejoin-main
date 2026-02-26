@@ -1,258 +1,176 @@
-from flask import Flask, request, jsonify
-import json
-from datetime import datetime, timedelta
+#!/usr/bin/env python3
+"""
+executor.py — Python Executor untuk Roblox Auto Rejoin
+
+Tidak ada .env — config diinput saat startup.
+Polling ke Node.js Internal API, ambil perintah,
+eksekusi shell command di Android, laporkan hasil.
+"""
+
 import os
-import threading
+import sys
 import time
 import subprocess
+import getpass
 import requests
 
-app = Flask(__name__)
+# ─── Prompt config saat startup ────────────────────────────────────────────────
 
-user_data = {}
-user_data_lock = threading.Lock()
+def prompt_config():
+    print("=" * 50)
+    print("  Roblox Auto Rejoin — Python Executor")
+    print("=" * 50)
+    print()
 
-def get_pid(package):
-    pid_cmd = f"pidof {package}"
-    pid_output = subprocess.getoutput(pid_cmd)
-    pid = pid_output.strip()
+    host = input("🌐 Node.js Host    : (Enter = 127.0.0.1) ").strip() or "127.0.0.1"
 
+    port_input = input("🔌 Node.js CMD Port: (Enter = 6970) ").strip()
+    port = int(port_input) if port_input.isdigit() else 6970
+
+    secret = ""
+    while not secret:
+        secret = getpass.getpass("🔐 Executor Secret  : ")
+        if not secret:
+            print("  ⚠️  Secret wajib diisi! Harus sama dengan yang diinput di Node.js.")
+
+    interval_input = input("⏱️  Poll Interval    : detik (Enter = 3) ").strip()
+    interval = float(interval_input) if interval_input else 3.0
+
+    print()
+    print(f"  ✅ Config OK — konek ke http://{host}:{port}")
+    print("=" * 50)
+    print()
+
+    return {"host": host, "port": port, "secret": secret, "interval": interval}
+
+# ─── Globals ───────────────────────────────────────────────────────────────────
+CONFIG = {}
+
+def headers():
+    return {"Content-Type": "application/json", "x-executor-secret": CONFIG["secret"]}
+
+def base_url():
+    return f"http://{CONFIG['host']}:{CONFIG['port']}"
+
+# ─── Shell helpers ──────────────────────────────────────────────────────────────
+
+def run(cmd):
+    try:
+        result = subprocess.run(cmd, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        output = (result.stdout + result.stderr).decode("utf-8", errors="replace").strip()
+        return result.returncode == 0, output
+    except subprocess.TimeoutExpired:
+        return False, "Timeout 30 detik"
+    except Exception as e:
+        return False, str(e)
+
+def get_pid(pkg):
+    ok, out = run(f"pidof {pkg}")
+    return out.strip() if out.strip() else None
+
+def kill_app(pkg):
+    pid = get_pid(pkg)
     if pid:
-        return pid
+        ok, msg = run(f"su -c 'kill {pid}'")
+        print(f"[Executor] Kill {pkg} PID={pid}: {'OK' if ok else msg}")
+        return ok
+    return False
 
-def send_webhook(webhook_url, content, avatar_url=None):
-    if webhook_url == "0":
-        print("Webhook URL is set to 0, skipping the request.")
-        return
+def launch_private_server(ps_link, pkg):
+    kill_app(pkg)
+    time.sleep(5)
+    return run(f"am start -a android.intent.action.VIEW -d '{ps_link}' {pkg}")
 
-    data = {
-        "content": content,
-        "username": "Staryuu Auto Rejoin",
-    }
-    
-    if avatar_url:
-        data["avatar_url"] = avatar_url
-    
-    response = requests.post(webhook_url, json=data)
-    
-    if response.status_code == 204:
-        print("Message sent successfully")
-    else:
-        print(f"Failed to send message. Status code: {response.status_code}, response: {response.text}")
+def launch_game(game_id, pkg):
+    return run(f"am start -a android.intent.action.VIEW -d 'roblox://placeID={game_id}' {pkg}")
 
-def launch_roblox_with_private_server(private_server_link, username):
-    with user_data_lock:
-        packagename = user_data.get(username, {}).get('packagename')
-    pid = get_pid(packagename)
-    if packagename:
-        if pid:
-            close = f"su -c 'kill {pid}'"
-            os.system(close)
-        time.sleep(5)
-        cmd = f"am start -a android.intent.action.VIEW -d '{private_server_link}' {packagename}"
-        os.system(cmd)
-        print(f"Launched Roblox game with ps: {private_server_link} for user: {username}")
-    else:
-        print(f"Package name not found for user: {username}")
-
-def launch_roblox(game_id, username):
-    with user_data_lock:
-        packagename = user_data.get(username, {}).get('packagename')
-    if packagename:
-        url = f"roblox://placeID={game_id}"
-        cmd = f"am start -a android.intent.action.VIEW -d '{url}' {packagename}"
-        os.system(cmd)
-        print(f"Launched Roblox game with ID: {game_id} for user: {username}")
-    else:
-        print(f"Package name not found for user: {username}")
-
-@app.route('/updatetime', methods=['POST'])
-def update_time():
-    username = request.json.get('username')
-    print(f"Received update_time request for user: {username}")
-    with user_data_lock:
-        if username in user_data:
-            user_data[username]['last_update'] = str(datetime.now())
-            print(f"Time updated for user: {username} with time {user_data[username]['last_update']}")
-            return jsonify({"message": f"Time updated for user: {username}"}), 200
-        else:
-            print(f"User '{username}' not found")
-            return jsonify({"error": f"User '{username}' not found"}), 404
-
-@app.route('/adduser', methods=['POST'])
-def add_user():
-    username = request.json.get('username')
-    packagename = request.json.get('packagename')
-    game_id = request.json.get('game_id')
-    is_ps = request.json.get('is_ps')
-    ps = request.json.get("private_link")
-    wb = request.json.get("webhook")
-    
-    if not username or not packagename or not game_id:
-        print("Missing required fields: username, packagename, and game_id are required")
-        return jsonify({"error": "Username, packagename, and game_id are required"}), 400
-    
-    with user_data_lock:
-        if username in user_data:
-            print(f"User '{username}' already exists")
-            return jsonify({"error": f"User '{username}' already exists"}), 409
-        
-        user_data[username] = {
-            'packagename': packagename,
-            'game_id': game_id,
-            'ps_link': ps,
-            'is_ps': is_ps,
-            'webhook': wb,
-            'last_update': str(datetime.now())
-        }
-    print(f"User added: {username}")
-    send_webhook(wb, f"New user added: ||{username}||")
-    return jsonify({"message": f"User '{username}' added successfully"}), 201
-
-
-# FIX 1: Moved out of add_user — was incorrectly indented inside it
-@app.route('/rejoinroblox', methods=['POST'])
-def rejoin_roblox():
-    try:
-        username = request.json.get('username')
-        print(f"Received rejoinroblox request for user: {username}")
-        
-        with user_data_lock:
-            if username not in user_data:
-                print(f"User '{username}' not found")
-                return jsonify({"error": f"User '{username}' not found"}), 404
-            user_info = user_data[username].copy()
-
-        if user_info['is_ps']:
-            launch_roblox_with_private_server(user_info['ps_link'], username)
-        else:
-            launch_roblox(user_info['game_id'], username)
-        send_webhook(user_info['webhook'], f"User ||{username}|| has Request Rejoin")
-        return jsonify({"message": f"Rejoined Roblox game for user: {username}"}), 200
-
-    except Exception as e:
-        print(f"Error occurred while processing rejoin request: {e}")
-        return jsonify({"error": "Internal server error"}), 500
-
-
-def find_all_roblox_packages():
-    try:
-        cmd = "pm list packages"
-        output = subprocess.getoutput(cmd)
-        
-        if output:
-            roblox_packages = [line.split(":")[1] for line in output.splitlines() if "roblox" in line.lower()]
-            if roblox_packages:
-                print(f"Package Roblox ditemukan: {roblox_packages}")
-                return roblox_packages
-            else:
-                print("Tidak ditemukan package yang mengandung 'roblox'.")
-                return []
-        else:
-            print("Gagal mendapatkan daftar package.")
-            return []
-    except Exception as e:
-        print(f"Error saat mencari package Roblox: {e}")
+def find_roblox_packages():
+    ok, out = run("pm list packages")
+    if not ok or not out:
         return []
+    return [l.split(":")[-1].strip() for l in out.splitlines() if "roblox" in l.lower()]
 
+# ─── API calls ─────────────────────────────────────────────────────────────────
 
-def check_inactive_users():
-    print("Starting check_inactive_users thread...")
+def fetch_commands():
+    try:
+        r = requests.get(f"{base_url()}/commands", headers=headers(), timeout=5)
+        if r.status_code == 200:
+            return r.json().get("commands", [])
+        if r.status_code == 401:
+            print("[Executor] ❌ Secret salah!")
+    except requests.exceptions.ConnectionError:
+        print(f"[Executor] ⚠️  Tidak bisa konek ke {base_url()}, menunggu...")
+    except Exception as e:
+        print(f"[Executor] Error fetch: {e}")
+    return []
+
+def report_result(cmd_id, success, message):
+    try:
+        requests.post(f"{base_url()}/result", headers=headers(),
+            json={"id": cmd_id, "success": success, "message": message}, timeout=5)
+    except Exception as e:
+        print(f"[Executor] Error report: {e}")
+
+# ─── Handlers ──────────────────────────────────────────────────────────────────
+
+def handle_rejoin(cmd):
+    username = cmd.get("username", "?")
+    pkg      = cmd.get("packagename", "")
+    game_id  = cmd.get("game_id", "")
+    is_ps    = cmd.get("is_ps", False)
+    ps_link  = cmd.get("ps_link", "")
+
+    if not pkg:
+        return False, "packagename kosong"
+
+    print(f"[Executor] Rejoin {username} pkg={pkg} ps={is_ps}")
+    ok, msg = launch_private_server(ps_link, pkg) if (is_ps and ps_link) else launch_game(game_id, pkg)
+    status = "berhasil" if ok else "gagal"
+    print(f"[Executor] {username}: {status} — {msg}")
+    return ok, f"{status}: {msg}"
+
+def handle_scan_packages(cmd):
+    pkgs = find_roblox_packages()
+    msg = ("Package: " + ", ".join(pkgs)) if pkgs else "Tidak ada package Roblox"
+    print(f"[Executor] Scan: {msg}")
+    return bool(pkgs), msg
+
+HANDLERS = {"rejoin": handle_rejoin, "scan_packages": handle_scan_packages}
+
+def process_command(cmd):
+    cmd_id   = cmd.get("id", "")
+    cmd_type = cmd.get("type", "")
+    username = cmd.get("username", "?")
+    print(f"[Executor] ← {cmd_type} user={username} id={cmd_id[:8]}")
+    handler = HANDLERS.get(cmd_type)
+    if handler:
+        success, message = handler(cmd)
+    else:
+        success, message = False, f"Unknown: {cmd_type}"
+    report_result(cmd_id, success, message)
+
+# ─── Main loop ─────────────────────────────────────────────────────────────────
+
+def main():
+    global CONFIG
+    CONFIG = prompt_config()
+    print(f"[Executor] Polling setiap {CONFIG['interval']}s...\n")
+
     while True:
-        time.sleep(60)  
-        now = datetime.now()
-        inactive_users = []
+        try:
+            cmds = fetch_commands()
+            if cmds:
+                print(f"[Executor] {len(cmds)} command(s)")
+                for cmd in cmds:
+                    process_command(cmd)
+        except KeyboardInterrupt:
+            print("\n[Executor] Dihentikan.")
+            sys.exit(0)
+        except Exception as e:
+            print(f"[Executor] Error: {e}")
+        time.sleep(CONFIG["interval"])
 
-        with user_data_lock:
-            snapshot = {u: d.copy() for u, d in user_data.items()}
-
-        for username, data in snapshot.items():
-            last_update = datetime.strptime(data['last_update'], '%Y-%m-%d %H:%M:%S.%f')
-            if now - last_update > timedelta(minutes=5):
-                print(f"User Inactive: '{username}'")
-                inactive_users.append(username)
-        
-        for user in inactive_users:
-            time.sleep(10)
-            print(f"User {user} has been inactive for more than 5 minutes")
-
-            with user_data_lock:
-                user_info = user_data[user].copy()
-
-            if user_info['is_ps']:
-                launch_roblox_with_private_server(user_info['ps_link'], user)
-            else:
-                launch_roblox(user_info['game_id'], user)
-
-            new_time = str(datetime.now())
-            with user_data_lock:
-                user_data[user]['last_update'] = new_time
-
-            # FIX 2: Was 'username' (undefined), now correctly uses 'user'
-            send_webhook(user_info['webhook'], f"User ||{user}|| has been inactive, {new_time}")
-
-        print("Inactive users checked.")
-
-def list_users():
-    with user_data_lock:
-        snapshot = {u: d.copy() for u, d in user_data.items()}
-
-    if not snapshot:
-        print("\nTidak ada user yang terdaftar.")
-        return
-
-    print(f"\n{'='*60}")
-    print(f"{'No':<4} {'Username':<20} {'Package':<25} {'Status'}")
-    print(f"{'='*60}")
-
-    now = datetime.now()
-    for i, (username, data) in enumerate(snapshot.items(), 1):
-        last_update = datetime.strptime(data['last_update'], '%Y-%m-%d %H:%M:%S.%f')
-        elapsed = now - last_update
-        if elapsed > timedelta(minutes=5):
-            status = "INACTIVE ⚠️"
-        else:
-            status = f"Active ({int(elapsed.total_seconds())}s ago)"
-
-        print(f"{i:<4} {username:<20} {data['packagename']:<25} {status}")
-        print(f"     Game ID : {data['game_id']}")
-        print(f"     PS      : {'Yes - ' + data['ps_link'] if data['is_ps'] else 'No'}")
-        print(f"     Webhook : {'Set' if data['webhook'] and data['webhook'] != '0' else 'Not set'}")
-        print(f"     Last Update: {data['last_update']}")
-        print(f"{'-'*60}")
-
-    print(f"Total: {len(snapshot)} user(s)")
-
-def menu():
-    while True:
-        print("\nMain Menu:")
-        print("1. Enable Auto Rejoin")
-        print("2. Roblox Package List")
-        print("3. Daftar User")
-        print("4. Exit")
-        choice = input("Enter your choice: ")
-
-        if choice == '1':
-            thread = threading.Thread(target=check_inactive_users, daemon=True)
-            thread.start()
-            print("Background thread started.")
-        elif choice == '2':
-            roblox_packages = find_all_roblox_packages()
-            print(f"Package terkait Roblox: {roblox_packages}")
-        elif choice == '3':
-            list_users()
-        elif choice == '4':
-            print("Exiting menu.")
-            break
-        else:
-            print("Invalid choice. Please try again.")
-
-
-if __name__ == '__main__':
-    # FIX 3: Run Flask in a background thread so menu() doesn't block the server
-    flask_thread = threading.Thread(
-        target=lambda: app.run(host='127.0.0.1', port=6969),
-        daemon=True
-    )
-    flask_thread.start()
-    menu()
+if __name__ == "__main__":
+    main()
