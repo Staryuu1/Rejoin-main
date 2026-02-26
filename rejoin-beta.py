@@ -3,8 +3,6 @@ import time
 import subprocess
 import getpass
 import requests
-import random
-import string
 
 # ─── Prompt config ─────────────────────────────────────────────────────────────
 def prompt_config():
@@ -12,19 +10,19 @@ def prompt_config():
     print("  Roblox Auto Rejoin — Python Executor")
     print("=" * 52)
     print()
-    characters = string.ascii_uppercase + string.digits
-    executor_id =  ''.join(random.choices(characters, k=5))
+
+    executor_id = ""
     while not executor_id:
         executor_id = input("🏷️  Executor ID      : (misal: android_andi) ").strip()
         if not executor_id:
             print("  ⚠️  Wajib diisi!")
 
-    host = "https://prototipe.staryuu.my.id/"
+    host = input("🌐 Node.js URL      : (misal: https://myapp.onrender.com) ").strip()
     host = host.rstrip('/')
     if not host:
         host = "http://127.0.0.1:3000"
 
-    secret = "Staryuu17"
+    secret = ""
     while not secret:
         secret = getpass.getpass("🔐 Executor Secret  : ")
         if not secret:
@@ -71,17 +69,11 @@ def run(cmd):
     except Exception as e:
         return False, str(e)
 
-def get_pid(pkg):
-    ok, out = run(f"pidof {pkg}")
-    return out.strip() if out.strip() else None
-
 def kill_app(pkg):
-    pid = get_pid(pkg)
-    if pid:
-        ok, msg = run(f"su -c 'kill {pid}'")
-        print(f"[{CONFIG['executor_id']}] Kill {pkg} PID={pid}: {'OK' if ok else msg}")
-        return ok
-    return False
+    # am force-stop tidak butuh root dan lebih bersih dari kill <pid>
+    ok, msg = run(f"am force-stop {pkg}")
+    print(f"[{CONFIG['executor_id']}] force-stop {pkg}: {'OK' if ok else msg}")
+    return ok
 
 def launch_private_server(ps_link, pkg):
     kill_app(pkg)
